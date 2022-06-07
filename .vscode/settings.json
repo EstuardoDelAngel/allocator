@@ -1,0 +1,13 @@
+{
+    "files.associations": {
+        "stdio.h": "c",
+        "mman.h": "c",
+        "stdlib.h": "c",
+        "_malloc.h": "c",
+        "alloc.h": "c",
+        "stddef.h": "c",
+        "assert.h": "c",
+        "stdint.h": "c",
+        "unistd.h": "c"
+    }
+}
