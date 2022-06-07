@@ -1,0 +1,5 @@
+./.vscode/*
+./build/*
+./src/main.dSYM/*
+./src/main.exe
+./src/main.c
