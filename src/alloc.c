@@ -7,26 +7,25 @@
 
 #include "alloc.h"
 
+#define MAX_SMALL_CHUNK_SIZE 3
+#define MAX_BIN_SIZE 31
+#define MMAP_PAGE_THRESHOLD 4
+#define MUNMAP_PAGE_THRESHOLD 4
 
-#define MAX_SMALL_CHUNK_SIZE = 12,
-#define MAX_BIN_SIZE = 31,
-#define MMAP_PAGE_THRESHOLD = 1,
-#define MUNMAP_PAGE_THRESHOLD = 1,
+#define WORD_MAX UINTPTR_MAX
+#define WORD_BYTES (sizeof(word_t))
+#define MAX_SMALL_CHUNK_BYTES (1 << MAX_SMALL_CHUNK_SIZE)
+#define MAX_SMALL_CHUNK_WORDS (MAX_SMALL_CHUNK_BYTES / WORD_BYTES)
+#define N_BINS (MAX_BIN_SIZE - MAX_SMALL_CHUNK_SIZE + MAX_SMALL_CHUNK_WORDS - 1)
 
-#define WORD_MAX = UINTPTR_MAX,
-#define WORD_BYTES = sizeof(word_t),
-#define MAX_SMALL_CHUNK_BYTES = 1 << MAX_SMALL_CHUNK_SIZE,
-#define MAX_SMALL_CHUNK_WORDS = MAX_SMALL_CHUNK_BYTES / WORD_BYTES,
-#define N_BINS = MAX_BIN_SIZE - MAX_SMALL_CHUNK_SIZE + MAX_SMALL_CHUNK_WORDS - 1,
+#define SIZE_MASK (WORD_MAX >> 2)
+#define USED_MASK (~(WORD_MAX >> 1))
+#define BOUNDARY_MASK (~(SIZE_MASK | USED_MASK))
 
-#define SIZE_MASK = WORD_MAX >> 2,
-#define USED_MASK = ~(WORD_MAX >> 1),
-#define BOUNDARY_MASK = ~(SIZE_MASK | USED_MASK),
-
-#define USED = USED_MASK,
-#define UNUSED = 0,
-#define BOUNDARY = BOUNDARY_MASK,
-#define NOT_BOUNDARY = 0
+#define USED USED_MASK
+#define UNUSED 0
+#define BOUNDARY BOUNDARY_MASK
+#define NOT_BOUNDARY 0
 
 #define PTR_TO_CHUNK(ptr) ((chunk_ptr_t)(ptr)-1)
 #define DATA(chunk) ((chunk_ptr_t)(chunk) + 1)
@@ -62,18 +61,20 @@ static inline chunk_ptr_t prev_tail(const chunk_ptr_t chunk) { return chunk - 1;
 static inline chunk_ptr_t next_adj(const chunk_ptr_t chunk) { return chunk + get_size(chunk) + 2; }
 static inline chunk_ptr_t prev_adj(const chunk_ptr_t chunk) { return chunk - get_size(prev_tail(chunk)) - 2; }
 
+
 static inline void set_used(chunk_ptr_t chunk, word_t used) {
-    *chunk = (*chunk & ~USED_MASK) | (used & USED_MASK);
-    *tail(chunk) = (*tail(chunk) & ~USED_MASK) | (used & USED_MASK);
+    *chunk = (*chunk & ~USED_MASK) | used;
+    chunk_ptr_t chunk_tail = tail(chunk);
+    *chunk_tail = (*chunk_tail & ~USED_MASK) | used;
 }
 
 static inline void set_boundary(chunk_ptr_t chunk, word_t boundary) {
-    *chunk = (*chunk & ~BOUNDARY_MASK) | (boundary & BOUNDARY_MASK);
+    *chunk = (*chunk & ~BOUNDARY_MASK) | boundary;
 }
 
 static inline void create_chunk(chunk_ptr_t chunk, word_t size, word_t used, word_t start, word_t end) {
-    *chunk = (size & SIZE_MASK) | (used & USED_MASK);
-    *(chunk + (size & SIZE_MASK) + 1) = *chunk | end;
+    *chunk = size | used;
+    *(chunk + size + 1) = *chunk | end;
     *chunk |= start;
 }
 
@@ -145,6 +146,7 @@ static chunk_ptr_t malloc_internal(word_t size, bool zero) {
         chunk = bins[i];
         while (chunk) {
             if (get_size(chunk) >= size) {
+                // printf("found chunk\n");
                 borrow_chunk(chunk);
                 set_used(chunk, USED);
                 shrink_chunk(chunk, size);
@@ -156,28 +158,36 @@ static chunk_ptr_t malloc_internal(word_t size, bool zero) {
     }
 
     // no chunk found, mmap
+    // printf("mmap");
     word_t pages = ceil_div(size + 2, PAGE_WORDS());
     word_t alloced = pages * PAGE_WORDS() - 2;
     chunk = (chunk_ptr_t)MMAP(last_alloc, pages);
     if (chunk == MAP_FAILED) return NULL;
 
-    last_alloc = chunk;
-    last_alloc_words = pages * PAGE_WORDS();
+    // printf(" %p, %p ", last_alloc + last_alloc_words, chunk);
 
     if (last_alloc && last_alloc + last_alloc_words == chunk) {
         if (!used(prev_tail(chunk))) {
+            // printf(" (merge with previous)");
             chunk = prev_adj(chunk);
             alloced += get_size(chunk) + 2;
             if (zero) memset((void *)DATA(chunk), 0, (get_size(chunk) + 2) / WORD_BYTES);
             borrow_chunk(chunk);
             create_chunk(chunk, alloced, USED, boundary(chunk), BOUNDARY);
         } else {
+            // printf(" (adjacent)");
             set_boundary(prev_tail(chunk), NOT_BOUNDARY);
             create_chunk(chunk, alloced, USED, NOT_BOUNDARY, BOUNDARY);
         }
     } else {
+        // printf(" (not adjacent)");
         create_chunk(chunk, alloced, USED, BOUNDARY, BOUNDARY);
     }
+
+    last_alloc = chunk;
+    last_alloc_words = pages * PAGE_WORDS();
+
+    // printf("\n");
 
     shrink_chunk(chunk, size);
     return DATA(chunk);
