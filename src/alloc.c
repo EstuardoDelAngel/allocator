@@ -146,7 +146,6 @@ static chunk_ptr_t malloc_internal(word_t size, bool zero) {
         chunk = bins[i];
         while (chunk) {
             if (get_size(chunk) >= size) {
-                // printf("found chunk\n");
                 borrow_chunk(chunk);
                 set_used(chunk, USED);
                 shrink_chunk(chunk, size);
@@ -158,36 +157,28 @@ static chunk_ptr_t malloc_internal(word_t size, bool zero) {
     }
 
     // no chunk found, mmap
-    // printf("mmap");
     word_t pages = ceil_div(size + 2, PAGE_WORDS());
     word_t alloced = pages * PAGE_WORDS() - 2;
     chunk = (chunk_ptr_t)MMAP(last_alloc, pages);
     if (chunk == MAP_FAILED) return NULL;
 
-    // printf(" %p, %p ", last_alloc + last_alloc_words, chunk);
-
     if (last_alloc && last_alloc + last_alloc_words == chunk) {
         if (!used(prev_tail(chunk))) {
-            // printf(" (merge with previous)");
             chunk = prev_adj(chunk);
             alloced += get_size(chunk) + 2;
             if (zero) memset((void *)DATA(chunk), 0, (get_size(chunk) + 2) / WORD_BYTES);
             borrow_chunk(chunk);
             create_chunk(chunk, alloced, USED, boundary(chunk), BOUNDARY);
         } else {
-            // printf(" (adjacent)");
             set_boundary(prev_tail(chunk), NOT_BOUNDARY);
             create_chunk(chunk, alloced, USED, NOT_BOUNDARY, BOUNDARY);
         }
     } else {
-        // printf(" (not adjacent)");
         create_chunk(chunk, alloced, USED, BOUNDARY, BOUNDARY);
     }
 
     last_alloc = chunk;
     last_alloc_words = pages * PAGE_WORDS();
-
-    // printf("\n");
 
     shrink_chunk(chunk, size);
     return DATA(chunk);
