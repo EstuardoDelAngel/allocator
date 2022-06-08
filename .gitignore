@@ -3,3 +3,5 @@ build/
 src/main.dSYM
 src/main
 src/main.c
+Makefile
+.gitignore

@@ -3,9 +3,6 @@
 #include <stddef.h>
 
 // MAX_SMALL_CHUNK_BYTES == 1 << MAX_SMALL_CHUNK_SIZE, e.g. 9 corresponds to 512 bytes
-#ifndef MAX_SMALL_CHUNK_SIZE
-#define MAX_SMALL_CHUNK_SIZE 12
-#endif
 
 void *malloc_(size_t size);
 void *calloc_(size_t num, size_t size);
