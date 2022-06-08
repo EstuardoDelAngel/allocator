@@ -1,3 +1,3 @@
-# alloc
+# allocator
 
-WIP -- a POSIX implementation of the stdlib.h memory allocation functions
+Single-threaded implementation of malloc, calloc, realloc and free for Linux/MacOs
