@@ -1,79 +1,53 @@
+#include <stdbool.h> // bool
+#include <stdint.h>  // uintptr_t, size_t
+#include <string.h>  // memcpy, memmove, memset
+
+#include <sys/mman.h> // mmap, munmap
+#include <unistd.h>   // sysconf, _SC_PAGESIZE
+
 #include "alloc.h"
 
-#include <stdbool.h>
-#include <stdint.h>
-#include <string.h> // for memcpy and memmove
 
-#include <sys/mman.h>
-#include <unistd.h>
+#define MAX_SMALL_CHUNK_SIZE = 12,
+#define MAX_BIN_SIZE = 31,
+#define MMAP_PAGE_THRESHOLD = 1,
+#define MUNMAP_PAGE_THRESHOLD = 1,
 
-#include <stdio.h> // remove
+#define WORD_MAX = UINTPTR_MAX,
+#define WORD_BYTES = sizeof(word_t),
+#define MAX_SMALL_CHUNK_BYTES = 1 << MAX_SMALL_CHUNK_SIZE,
+#define MAX_SMALL_CHUNK_WORDS = MAX_SMALL_CHUNK_BYTES / WORD_BYTES,
+#define N_BINS = MAX_BIN_SIZE - MAX_SMALL_CHUNK_SIZE + MAX_SMALL_CHUNK_WORDS - 1,
 
-// TODO:
-//   - if not linked list, use mmap like sbrk(0)
-//     or:
-//       - test page linked list ?
-//       - merge adjacent pages whenever space is made ?
-//   - try a minimum number of pages allocated, test to see fastest
-//   - free
-//   - calloc
-//   - realloc
+#define SIZE_MASK = WORD_MAX >> 2,
+#define USED_MASK = ~(WORD_MAX >> 1),
+#define BOUNDARY_MASK = ~(SIZE_MASK | USED_MASK),
 
-// bin sizes (bytes) are as such (assuming default defines):
-// 16, 24, 32, 40, ..., 4080, 4088, 4096, 8192, 16384, ..., 1073741824, 2147483648
+#define USED = USED_MASK,
+#define UNUSED = 0,
+#define BOUNDARY = BOUNDARY_MASK,
+#define NOT_BOUNDARY = 0
 
-#define DATA(chunk) ((chunk) + 1)
-#define NEXT(chunk) (*(chunk_ptr_t *)((chunk) + 1))
-#define PREV(chunk) (*(chunk_ptr_t *)((chunk) + 2))
+#define PTR_TO_CHUNK(ptr) ((chunk_ptr_t)(ptr)-1)
+#define DATA(chunk) ((chunk_ptr_t)(chunk) + 1)
+#define NEXT(chunk) (*(chunk_ptr_t *)((chunk_ptr_t)(chunk) + 1))
+#define PREV(chunk) (*(chunk_ptr_t *)((chunk_ptr_t)(chunk) + 2))
 
 #define PAGE_BYTES() (sysconf(_SC_PAGESIZE))
 #define PAGE_WORDS() (PAGE_BYTES() / WORD_BYTES)
-#define MMAP(ptr, pages)                                                                  \
-    mmap((ptr), max((pages), MMAP_PAGE_THRESHOLD) * PAGE_BYTES(), PROT_READ | PROT_WRITE, \
-         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
-#define MUNMAP(ptr, pages) munmap((ptr), (pages)*PAGE_BYTES())
+#define MMAP(ptr, pages)                                                                \
+    (chunk_ptr_t) mmap((void *)(ptr), max((pages), MMAP_PAGE_THRESHOLD) * PAGE_BYTES(), \
+                       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+#define MUNMAP(ptr, pages) munmap((void *)(ptr), (pages)*PAGE_BYTES())
 
-enum {
-    MAX_SMALL_CHUNK_SIZE = 12,
-    MAX_BIN_SIZE = 31,
-    MMAP_PAGE_THRESHOLD = 1,
-    MUNMAP_PAGE_THRESHOLD = 1,
-
-    WORD_MAX = UINTPTR_MAX,
-    WORD_BYTES = sizeof(word_t),
-    MAX_SMALL_CHUNK_BYTES = 1 << MAX_SMALL_CHUNK_SIZE,
-    MAX_SMALL_CHUNK_WORDS = MAX_SMALL_CHUNK_BYTES / WORD_BYTES,
-    N_BINS = MAX_BIN_SIZE - MAX_SMALL_CHUNK_SIZE + MAX_SMALL_CHUNK_WORDS - 1,
-
-    SIZE_MASK = WORD_MAX >> 2,
-    USED_MASK = ~(WORD_MAX >> 1),
-    BOUNDARY_MASK = ~(SIZE_MASK | USED_MASK),
-
-    USED = USED_MASK,
-    UNUSED = 0,
-    BOUNDARY = BOUNDARY_MASK,
-    NOT_BOUNDARY = 0
-};
 
 typedef uintptr_t word_t;
 typedef word_t *chunk_ptr_t;
 
-// this assumes the bit representation of null is 0
-static chunk_ptr_t bins[N_BINS] = {0};
+
+static chunk_ptr_t bins[N_BINS] = {0}; // assuming the bit representation of null is 0
 static chunk_ptr_t last_alloc = NULL;
 static word_t last_alloc_words = 0;
-
-static void print_n(uintptr_t *arr, word_t n) { // remove
-    printf("{");
-    if (n >= 1) {
-        printf("%lu", arr[0]);
-
-        for (size_t i = 1; i < n; i++) {
-            printf(", %lu", arr[i]);
-        }
-    }
-    printf("}\n");
-}
 
 static inline word_t max(word_t x, word_t y) { return (x > y) ? x : y; }
 static inline word_t ceil_div(word_t x, word_t y) { return (x + y - 1) / y; }
@@ -103,12 +77,14 @@ static inline void create_chunk(chunk_ptr_t chunk, word_t size, word_t used, wor
     *chunk |= start;
 }
 
+
 static inline size_t words_to_bin_index(word_t words) {
     if (words < MAX_SMALL_CHUNK_WORDS) return words - 2;
     size_t i = 0;
     while (words >>= 1) i++;
     return i + MAX_SMALL_CHUNK_WORDS + 1 - MAX_SMALL_CHUNK_SIZE;
 }
+
 
 static void return_chunk(chunk_ptr_t chunk) {
     word_t words = get_size(chunk);
@@ -140,11 +116,12 @@ static inline void borrow_chunk(chunk_ptr_t chunk) {
         bins[words_to_bin_index(get_size(chunk))] = NEXT(chunk);
 }
 
-// assumes chunk is already used
-static void shrink_chunk(chunk_ptr_t chunk, word_t new_size) {
+
+static void shrink_chunk(chunk_ptr_t chunk, word_t size) {
+    // assumes chunk is already used
     word_t old_size = get_size(chunk);
     word_t end = boundary(tail(chunk));
-    if (old_size - new_size > 4) {
+    if (old_size - size > 4) {
         chunk_ptr_t next_chunk = next_adj(chunk);
         create_chunk(chunk, size, USED, boundary(chunk), NOT_BOUNDARY);
         chunk_ptr_t new_chunk = next_adj(chunk);
@@ -160,7 +137,8 @@ static void shrink_chunk(chunk_ptr_t chunk, word_t new_size) {
     }
 }
 
-static chunk_ptr_t malloc_internal(word_t size) {
+
+static chunk_ptr_t malloc_internal(word_t size, bool zero) {
     // find chunk of at least the required number of words
     chunk_ptr_t chunk;
     for (size_t i = words_to_bin_index(size); i < N_BINS; i++) {
@@ -170,6 +148,7 @@ static chunk_ptr_t malloc_internal(word_t size) {
                 borrow_chunk(chunk);
                 set_used(chunk, USED);
                 shrink_chunk(chunk, size);
+                if (zero) memset((void *)DATA(chunk), 0, size / WORD_BYTES);
                 return DATA(chunk);
             }
             chunk = NEXT(chunk);
@@ -179,7 +158,7 @@ static chunk_ptr_t malloc_internal(word_t size) {
     // no chunk found, mmap
     word_t pages = ceil_div(size + 2, PAGE_WORDS());
     word_t alloced = pages * PAGE_WORDS() - 2;
-    chunk = MMAP(last_alloc, pages);
+    chunk = (chunk_ptr_t)MMAP(last_alloc, pages);
     if (chunk == MAP_FAILED) return NULL;
 
     last_alloc = chunk;
@@ -189,6 +168,7 @@ static chunk_ptr_t malloc_internal(word_t size) {
         if (!used(prev_tail(chunk))) {
             chunk = prev_adj(chunk);
             alloced += get_size(chunk) + 2;
+            if (zero) memset((void *)DATA(chunk), 0, (get_size(chunk) + 2) / WORD_BYTES);
             borrow_chunk(chunk);
             create_chunk(chunk, alloced, USED, boundary(chunk), BOUNDARY);
         } else {
@@ -203,8 +183,16 @@ static chunk_ptr_t malloc_internal(word_t size) {
     return DATA(chunk);
 }
 
-static chunk_ptr_t realloc_internal(chunk_ptr_t ptr, word_t size) {
-    chunk_ptr_t chunk = ptr - 1; // start of chunk
+
+void *realloc_(void *ptr, size_t size) {
+    if (!ptr) return malloc_(size);
+    if (!size) {
+        free_(ptr);
+        return NULL;
+    }
+
+    size = bytes_to_words(size);
+    chunk_ptr_t chunk = PTR_TO_CHUNK(ptr); // start of chunk
 
     // free the end bit
     if (get_size(chunk) >= size) {
@@ -223,7 +211,6 @@ static chunk_ptr_t realloc_internal(chunk_ptr_t ptr, word_t size) {
             shrink_chunk(chunk, size);
             return ptr;
         }
-        next_unused = true;
     }
 
     // expand into previous
@@ -235,31 +222,53 @@ static chunk_ptr_t realloc_internal(chunk_ptr_t ptr, word_t size) {
         shrink_chunk(prev, size);
         prev++;
         memmove((void *)prev, (void *)ptr, size * WORD_BYTES);
-        return prev;
+        return (void *)prev;
     }
 
-    chunk_ptr_t new_ptr = malloc_internal(size);
+    chunk_ptr_t new_ptr = malloc_internal(size, false);
     memcpy((void *)new_ptr, (void *)ptr, size * WORD_BYTES);
-    return new_ptr;
+    return (void *)new_ptr;
+}
+
+void free_(void *ptr) {
+    if (!ptr) return;
+    set_used(ptr, UNUSED);
+    chunk_ptr_t chunk = PTR_TO_CHUNK(ptr);
+
+    if (!boundary(tail(chunk))) {
+        chunk_ptr_t next = next_adj(chunk);
+        if (!used(next)) {
+            borrow_chunk(next);
+            create_chunk(chunk, get_size(chunk) + get_size(next) + 2, UNUSED, boundary(chunk), boundary(tail(next)));
+        }
+    }
+
+    if (!boundary(chunk)) {
+        chunk_ptr_t prev = prev_adj(chunk);
+        if (!used(prev)) {
+            borrow_chunk(prev);
+            create_chunk(prev, get_size(prev) + get_size(chunk) + 2, UNUSED, boundary(prev), boundary(tail(chunk)));
+        }
+    }
+
+    if (boundary(chunk) && boundary(tail(chunk))) {
+        word_t pages = (get_size(chunk) + 2) / PAGE_WORDS();
+        if (pages >= MUNMAP_PAGE_THRESHOLD) {
+            MUNMAP(chunk, pages);
+            return;
+        }
+    }
+
+    return_chunk(chunk);
 }
 
 void *malloc_(size_t size) {
     if (!size) return NULL;
-    return (void *)malloc_internal(bytes_to_words(size));
-}
-
-void *realloc_(void *ptr, size_t size) {
-    if (!size) {
-        free_(ptr);
-        return NULL;
-    }
-    return (void *)realloc_internal((chunk_ptr_t)ptr, bytes_to_words(size));
+    return (void *)malloc_internal(bytes_to_words(size), false);
 }
 
 void *calloc_(size_t num, size_t size) {
     word_t new_size = (word_t)num * size;
-    if (!num || !size || new_size / num != size) return NULL;
-    return (void *)malloc_internal(bytes_to_words(new_size));
+    if (!num || !size || new_size / num != size) return NULL; // overflow check
+    return (void *)malloc_internal(bytes_to_words(new_size), true);
 }
-
-void free_(void *ptr) {}
