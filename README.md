@@ -19,6 +19,7 @@ heap: +-----------+---------+------------+--                --+-----------+--
       +-----------+-------|-+------------+--                --+-----------+--
                           |                                     ^
                           |-------------------------------------|
+```
 
 ## performance
 According to some (probably not very representative) tests, the provided functions are 1-2x slower than glibc's implementations.
